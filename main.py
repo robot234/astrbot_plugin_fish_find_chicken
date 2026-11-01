@@ -26,7 +26,7 @@ from urllib.parse import unquote, urljoin, urlparse
 import aiohttp
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.message.components import Image, Reply
 
@@ -511,19 +511,20 @@ class FishFindChicken(Star):
             yield event.plain_result("正在找另一张图，等这次结束再来")
             return
 
+        # 锁里绝对不能 yield：AstrBot 发完 yield 的消息可能不再回到这里，锁就永远不放了
+        fetch_error = ""
+        result: dict = {}
         async with self._lock:
             self._last_use[key] = now
             try:
                 image = await self._fetch_image(refs)
             except ValueError as exc:
-                yield event.plain_result(f"取图失败：{exc}")
-                return
-            yield event.plain_result("收到，开始找鸡（大约要 20 秒到 2 分钟）")
-            try:
-                result = await self._run_engine(image)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("[鱼鱼找鸡] 运行出错")
-                result = {"ok": False, "error": f"运行出错：{exc}"}
+                fetch_error = str(exc)
+            else:
+                result = await self._search(event, image)
+        if fetch_error:
+            yield event.plain_result(f"取图失败：{fetch_error}")
+            return
 
         if not result.get("ok"):
             yield event.plain_result(f"没查成：{result.get('error') or '未知错误'}")
@@ -533,3 +534,21 @@ class FishFindChicken(Star):
         if notes:
             reply += "\n（" + "；".join(notes) + "）"
         yield event.plain_result(reply)
+
+    async def _search(self, event: AstrMessageEvent, image: bytes) -> dict:
+        # 进度提示不能用 yield：AstrBot 把 yield 出去的结果当成本次回复发出，
+        # 事件已 stop_event()（rg2 等插件也会停止传播），发完第一条就不再回到处理函数，
+        # 后面的识图永远不会执行。所以这里直接发送，最终结果才由处理函数 yield。
+        try:
+            await event.send(MessageChain().message("收到，开始找鸡（大约要 20 秒到 2 分钟）"))
+        except Exception as exc:  # noqa: BLE001  提示发不出去也继续查
+            logger.warning(f"[鱼鱼找鸡] 进度提示发送失败：{exc}")
+        logger.info("[鱼鱼找鸡] 开始识图")
+        try:
+            result = await self._run_engine(image)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[鱼鱼找鸡] 运行出错")
+            result = {"ok": False, "error": f"运行出错：{exc}"}
+        logger.info(f"[鱼鱼找鸡] 识图结束：ok={bool(result.get('ok'))}，"
+                    f"耗时 {result.get('elapsedMs', '?')} ms")
+        return result
