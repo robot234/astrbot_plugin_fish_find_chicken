@@ -1,7 +1,7 @@
 name: astrbot_plugin_fish_find_chicken
 display_name: 鱼鱼找鸡
 desc: 引用一张图发 /鱼鱼找鸡，反查图里 coser 的社媒账号（谷歌 Lens / SauceNAO / trace.moe）。默认只有管理员能用。
-version: 1.0.0
+version: 1.0.1
 author: DIO
 repo: https://github.com/robot234/astrbot_plugin_fish_find_chicken
 astrbot_version: ">=4.16,<5"

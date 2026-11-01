@@ -21,7 +21,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import aiohttp
 
@@ -103,6 +103,38 @@ def _is_public_ip(text: str, allow_fake_ip: bool) -> bool:
     return ip.is_global
 
 
+def _astrbot_temp_dirs() -> list[Path]:
+    """AstrBot 自己存放已下载聊天图片的临时目录（data/temp）。只有这里的文件允许读取。"""
+    dirs: list[Path] = []
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+
+        dirs.append(Path(get_astrbot_temp_path()))
+    except Exception:  # noqa: BLE001  旧版本没有这个函数
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            dirs.append(Path(get_astrbot_data_path()) / "temp")
+        except Exception:  # noqa: BLE001
+            pass
+    resolved: list[Path] = []
+    for d in dirs:
+        try:
+            resolved.append(d.resolve(strict=True))
+        except OSError:
+            continue
+    return resolved
+
+
+def _ref_kind(ref: str) -> str:
+    low = ref.lower()
+    if low.startswith(("http://", "https://")):
+        return "http"
+    if low.startswith("base64://"):
+        return "base64"
+    return "local"
+
+
 class FishFindChicken(Star):
     """引用图片 + /鱼鱼找鸡，只有被允许的人能用。"""
 
@@ -161,38 +193,67 @@ class FishFindChicken(Star):
         refs: list[str] = []
         for comp in components or []:
             if isinstance(comp, Image):
-                for value in (getattr(comp, "url", None), getattr(comp, "file", None)):
-                    if isinstance(value, str) and value:
+                # AstrBot 预处理会把聊天图片下载到 data/temp，并把 url/file/path 改成本地路径
+                for value in (getattr(comp, "url", None), getattr(comp, "file", None),
+                              getattr(comp, "path", None)):
+                    if isinstance(value, str) and value and value not in refs:
                         refs.append(value)
         return refs
 
     async def _collect_refs(self, event: AstrMessageEvent) -> list[str]:
+        """按顺序收集候选：本条消息的图 → 引用消息的图 → 让协议端重新取引用消息。"""
         messages = event.get_messages() or []
         refs = self._image_refs(messages)
-        if refs:
-            return refs
         reply = next((c for c in messages if isinstance(c, Reply)), None)
         if reply is None:
-            return []
-        refs = self._image_refs(getattr(reply, "chain", None))
-        if refs:
+            return refs
+        for ref in self._image_refs(getattr(reply, "chain", None)):
+            if ref not in refs:
+                refs.append(ref)
+        if any(self._usable(r) for r in refs):
             return refs
         bot = getattr(event, "bot", None)
-        if bot is None or not hasattr(bot, "call_action"):
-            return []
+        if bot is None or not hasattr(bot, "call_action") or not getattr(reply, "id", None):
+            return refs
         try:
             resp = await bot.call_action("get_msg", message_id=int(reply.id))
         except Exception as exc:  # noqa: BLE001
-            logger.debug(f"[鱼鱼找鸡] get_msg 失败：{exc}")
-            return []
+            logger.info(f"[鱼鱼找鸡] get_msg 失败：{exc}")
+            return refs
         message = resp.get("message") if isinstance(resp, dict) else None
         for seg in message if isinstance(message, list) else []:
             if isinstance(seg, dict) and seg.get("type") == "image":
                 data = seg.get("data") or {}
                 for value in (data.get("url"), data.get("file")):
-                    if isinstance(value, str) and value:
+                    if isinstance(value, str) and value and value not in refs:
                         refs.append(value)
         return refs
+
+    def _local_temp_file(self, ref: str) -> Path | None:
+        """只认 AstrBot 自己 data/temp 目录里的普通文件；其它任何本机路径一律拒绝。"""
+        text = ref
+        if text.lower().startswith("file://"):
+            parsed = urlparse(text)
+            text = unquote(parsed.path or "")
+            if os.name == "nt" and re.match(r"^/[A-Za-z]:", text):
+                text = text[1:]
+        if not text:
+            return None
+        try:
+            real = Path(text).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        for root in _astrbot_temp_dirs():
+            try:
+                real.relative_to(root)
+            except ValueError:
+                continue
+            return real if real.is_file() else None
+        return None
+
+    def _usable(self, ref: str) -> bool:
+        kind = _ref_kind(ref)
+        return kind in ("http", "base64") or self._local_temp_file(ref) is not None
 
     async def _check_host(self, url: str) -> None:
         parsed = urlparse(url)
@@ -237,19 +298,27 @@ class FishFindChicken(Star):
 
     async def _fetch_image(self, refs: list[str]) -> bytes:
         last_error = "没找到能用的图片"
-        for ref in refs:
+        # 已经被 AstrBot 下载到 data/temp 的图最省事，排前面；其次 base64、网址
+        order = {"local": 0, "base64": 1, "http": 2}
+        for ref in sorted(refs, key=lambda r: order[_ref_kind(r)]):
             try:
-                if ref.startswith("base64://"):
+                kind = _ref_kind(ref)
+                if kind == "base64":
                     raw = ref[len("base64://"):]
                     if len(raw) > MAX_IMAGE_BYTES * 4 // 3 + 16:
                         raise ValueError("图片超过 20MB")
                     data = base64.b64decode(raw, validate=False)
-                elif ref.lower().startswith(("http://", "https://")):
+                elif kind == "http":
                     data = await self._download(ref)
                 else:
-                    # 本机路径、file:// 等一律不读：这正是原版最危险的地方
-                    continue
-            except (ValueError, binascii.Error, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    # 只读 AstrBot 自己的 data/temp；其它本机路径一律不读（原版最危险的地方）
+                    local = self._local_temp_file(ref)
+                    if local is None:
+                        continue
+                    if local.stat().st_size > MAX_IMAGE_BYTES:
+                        raise ValueError("图片超过 20MB")
+                    data = await asyncio.to_thread(local.read_bytes)
+            except (ValueError, OSError, binascii.Error, aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 last_error = str(exc) or exc.__class__.__name__
                 continue
             if not data:
@@ -262,6 +331,8 @@ class FishFindChicken(Star):
                 last_error = "只支持 jpg/png/webp/gif 图片"
                 continue
             return data
+        kinds = ", ".join(_ref_kind(r) for r in refs) or "无"
+        logger.info(f"[鱼鱼找鸡] 取图失败：{last_error}；候选类型：{kinds}")
         raise ValueError(last_error)
 
     # ── 运行环境 ──────────────────────────────────────────────────────────
