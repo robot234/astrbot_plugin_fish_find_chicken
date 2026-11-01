@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+state/
+tmp/
+*.zip
+node_modules/
+.DS_Store

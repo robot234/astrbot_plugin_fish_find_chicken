@@ -1,0 +1,80 @@
+{
+  "access_mode": {
+    "description": "谁可以使用",
+    "type": "string",
+    "default": "admin",
+    "options": ["admin", "whitelist", "all"],
+    "hint": "admin = 只有 AstrBot 管理员；whitelist = 管理员 + 下面填的 QQ 号和群；all = 所有人（不建议在大群开）。"
+  },
+  "allowed_users": {
+    "description": "允许使用的 QQ 号（白名单模式）",
+    "type": "list",
+    "default": [],
+    "hint": "只在“谁可以使用”选 whitelist 时生效，一行一个 QQ 号。"
+  },
+  "allowed_groups": {
+    "description": "允许使用的群号（白名单模式）",
+    "type": "list",
+    "default": [],
+    "hint": "只在 whitelist 模式生效。填了群号后，这个群里的所有人都能用。"
+  },
+  "reply_when_denied": {
+    "description": "没权限时回复提示",
+    "type": "bool",
+    "default": false,
+    "hint": "默认不回复，没权限的人发了指令也当没看见。"
+  },
+  "engines": {
+    "description": "识图引擎",
+    "type": "list",
+    "default": ["lens", "saucenao", "tracemoe"],
+    "hint": "可选：lens（谷歌 Lens，最准，需要浏览器和外网）、saucenao、tracemoe、iqdb、baidu（需要浏览器，较慢）。"
+  },
+  "timeout_sec": {
+    "description": "单个引擎超时（秒）",
+    "type": "int",
+    "default": 45,
+    "hint": "范围 10—180。"
+  },
+  "max_accounts": {
+    "description": "最多报几个账号",
+    "type": "int",
+    "default": 3
+  },
+  "strict_consensus": {
+    "description": "只报名字对得上的账号",
+    "type": "bool",
+    "default": true,
+    "hint": "开着更准；关掉会把名字对不上的候选账号也报出来，误报会变多。"
+  },
+  "cooldown_sec": {
+    "description": "每人冷却时间（秒）",
+    "type": "int",
+    "default": 30,
+    "hint": "管理员不受冷却限制。识图网站有免费额度，别刷太快。"
+  },
+  "proxy": {
+    "description": "浏览器代理（可留空）",
+    "type": "string",
+    "default": "",
+    "hint": "谷歌 Lens 需要外网。如果机器本身连不上谷歌，填本机代理，例如 http://127.0.0.1:7890。留空 = 直连/跟随系统透明代理。"
+  },
+  "allow_fake_ip": {
+    "description": "兼容 Clash fake-ip",
+    "type": "bool",
+    "default": true,
+    "hint": "Clash/mihomo 的 fake-ip 模式会把所有网站解析成 198.18.x.x，不开这个就会被安全检查拦掉。没用 Clash 可以关。"
+  },
+  "browser_path": {
+    "description": "浏览器路径（可留空）",
+    "type": "string",
+    "default": "",
+    "hint": "留空自动找 Edge/Chrome/Chromium，找不到时会借用其它插件装的 Playwright 浏览器（比如 blablalink）。"
+  },
+  "node_path": {
+    "description": "Node.js 路径（可留空）",
+    "type": "string",
+    "default": "",
+    "hint": "留空自动找 node 命令。需要 Node.js 20 或更新版本。"
+  }
+}
